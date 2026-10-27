@@ -187,7 +187,8 @@ evaluations, and usage, with these changes:
 - Skills and agent plugins link to registered versions in MLflow's
   [Skill Registry](../0008-mvp-skill-registry/0008-mvp-skill-registry.md). MCP servers and prompts
   similarly link to their MLflow registries; declared agent dependencies resolve through the
-  configured agent registry backend.
+  configured agent registry backend. Each registered AI asset links back to the agents and snapshots
+  that reference it.
 - The **Models** page links to registered models and lists external models by provider and model
   name (e.g. `GPT 6.1 Sol`).
 - The **Tools** page shows declared tools and tools observed in traces, with links to registered MCP
