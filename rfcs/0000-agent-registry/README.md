@@ -25,8 +25,8 @@ An agent should have one persistent identity in MLflow from development through 
 registry page would bring snapshots, source code, AI asset dependencies, evaluations, traces, and
 endpoints together. Each snapshot would show its prompts, models, tools, skills, and plugins
 alongside evaluation results and production quality, latency, and cost, with links to the underlying
-traces. Teams could compare candidates, choose what to deploy, and investigate production regressions
-using the same record.
+traces. Teams could compare candidates, choose what to deploy, and investigate production
+regressions using the same record.
 
 MLflow's built-in AI Assistant or an external AI agent using MLflow's APIs could use this context as
 well. If latency rises after an upgrade, it could compare the snapshots' source and dependencies
@@ -86,8 +86,8 @@ source and declared AI assets; trace links show which assets a request actually 
    commit as the source revision from a clean checkout when none is supplied; the run records the
    snapshot ID.
 2. Change the code or its declared assets and evaluate again. A new commit or resolved asset creates
-   a snapshot. If the Git checkout is dirty, the author supplies a `revision` to distinguish
-   the local code state.
+   a snapshot. If the Git checkout is dirty, the author supplies a `revision` to distinguish the
+   local code state.
 3. Compare the runs by snapshot, source, and observed assets.
 
 For a production prompt A/B test, register the candidate as a new snapshot with its prompt
@@ -125,20 +125,10 @@ with links to the prompt version actually used when available.
 
 ### Review a fleet of agents
 
-1. An operator creates a dev fleet and adds several cooperating agents, selecting the `dev`
-   environment for each membership.
-2. A developer who can read those agents' dev activity opens the fleet to compare quality and usage,
-   then filters its traces and sessions to selected agents.
-3. From the fleet's **Agents** tab, they open one agent to investigate its dev activity.
-
-### Separate development and production activity
-
-1. An administrator defines `dev` and `prod` environments for the workspace. Developers can write
-   dev traces and evaluation runs but only read prod ones; the production deployment can write prod.
-2. Developers and deployments supply an environment when logging traces or evaluations. Activity
-   without one remains unassigned under the agent's base permissions.
-3. On the agent overview, users filter by snapshot and environment to compare activity without
-   splitting the agent's identity or snapshot history.
+1. An operator creates a fleet and adds several cooperating agents.
+2. A developer with read access opens the fleet to compare quality and usage, then filters its
+   traces and sessions to selected agents.
+3. From the fleet's **Agents** tab, they open one agent to investigate its activity.
 
 ## Detailed design
 
@@ -194,9 +184,8 @@ evaluations, and usage, with these changes:
 - The **Tools** page shows declared tools and tools observed in traces, with links to registered MCP
   servers when known.
 
-The agent overview retains the GenAI experiment overview and adds first-class **Snapshot**,
-**Version**, and **Environment** filters. The environment filter includes unassigned activity. The
-main **Agents** page also supports filtering by fleet.
+The agent overview retains the GenAI experiment overview and adds first-class **Snapshot** and
+**Version** filters. The main **Agents** page also supports filtering by fleet.
 
 Users can compare snapshots, see their evaluation results and production traces, and identify which
 prompt, tool, skill, model, or subagent changed. Harness-based agents can also identify the harness
@@ -262,10 +251,19 @@ snapshot and returns its ID.
 `assets` groups named registry URIs by type; the handle returned by `set_agent` resolves them on
 access, reusing registry loading and caching behavior.
 
-`environment` applies to traces and evaluation runs, not snapshots.
-
 `set_agent` can load `mlflow-agent.yaml` by default, or use a manifest path supplied directly or
-through an environment variable. Explicit arguments replace the corresponding manifest fields.
+through `MLFLOW_AGENT_MANIFEST`. Explicit arguments replace the corresponding manifest fields. The
+`agent_id` argument is optional when the ID is supplied by the manifest or `MLFLOW_AGENT_ID`; users
+can call `mlflow.set_agent()` without repeating it in code.
+
+Setting `MLFLOW_AGENT_MANIFEST=autoload` opts into loading `mlflow-agent.yaml` from the process's
+current working directory without calling `set_agent`; parent directories are not searched. Setting
+the variable to a file path loads that manifest instead. With the variable unset, merely having a
+manifest file does not enable automatic loading. Automatic loading selects the agent and finds or
+creates a snapshot using the same rules as `set_agent`. An explicit `set_agent` call overrides
+corresponding manifest fields; an explicit `set_experiment` call takes precedence over automatic
+agent selection. A missing or invalid manifest, unresolved variable, or permission error surfaces as
+an error rather than silently falling back to another destination.
 
 The manifest may read its agent ID, publisher version, or Git revision from a named environment
 variable, such as `version: {fromEnv: APP_VERSION}`. MLflow resolves the value when creating the
@@ -288,6 +286,14 @@ asset from the alias moving can create a snapshot during execution; each trace r
 and assets it actually used. A trace spanning different snapshots shows that mixture rather than
 claiming one snapshot. Arbitrary assets observed in traces do not trigger registration.
 
+#### Onboarding wizard
+
+Similar to MLflow's agent instrumentation wizard, an onboarding wizard guides users through
+identifying the AI assets their agent uses, reviewing them, and registering or reusing those assets
+in MLflow. It then generates `mlflow-agent.yaml` with the agent ID and named asset references, ready
+for `set_agent` or a harness integration to resolve into a snapshot. Users can instead set
+`MLFLOW_AGENT_MANIFEST=autoload` and run their instrumented application without calling `set_agent`.
+
 #### Harness integrations
 
 An MLflow tracing plugin for a harness can read `mlflow-agent.yaml` to select the agent and supply
@@ -306,39 +312,36 @@ verified available skills produces a different snapshot.
 
 OTLP request headers provide defaults; root-span attributes can override them or carry a manifest:
 
-| Field       | Request header               | Root-span attribute        |
-| ----------- | ---------------------------- | -------------------------- |
-| Agent       | `x-mlflow-agent-id`          | `mlflow.agent.id`          |
-| Snapshot    | `x-mlflow-agent-snapshot-id` | `mlflow.agent.snapshot_id` |
-| Environment | `x-mlflow-agent-environment` | `mlflow.agent.environment` |
-| Manifest    | —                            | `mlflow.agent.manifest`    |
+| Field    | Request header               | Root-span attribute        |
+| -------- | ---------------------------- | -------------------------- |
+| Agent    | `x-mlflow-agent-id`          | `mlflow.agent.id`          |
+| Snapshot | `x-mlflow-agent-snapshot-id` | `mlflow.agent.snapshot_id` |
+| Manifest | —                            | `mlflow.agent.manifest`    |
 
 This allows one export to contain traces from different agents or snapshots. MLflow validates each
-agent and snapshot pairing and environment permission. An agent that does not use the MLflow client
-may send a resolved manifest in the root span. With registration permission, MLflow can find or
-create a snapshot from its resolved contents and omit the manifest from stored spans.
+agent and snapshot pairing and agent permissions. An agent that does not use the MLflow client may
+send a resolved manifest in the root span. With registration permission, MLflow can find or create a
+snapshot from its resolved contents and omit the manifest from stored spans.
 
 #### Agent fleets
 
 An agent can belong to multiple fleets in its workspace. A fleet has a stable ID, a mutable name,
-and a description of its purpose. The fleet owns its membership links to agents. Each link can
-optionally select a workspace environment; without a selector, it includes all environments and
-unassigned activity. Traces, sessions, and evaluation runs do not record fleet membership.
+and a description of its purpose. The fleet owns its membership links to agents. Traces, sessions,
+and evaluation runs do not record fleet membership.
 
 In the UI, **Agent Fleets** opens a fleet overview with the GenAI quality and usage views, traces,
 and sessions across its agents. An agent multiselect filters these views, and an **Agents** tab
-links to each member's normal agent page with its selected environment applied. SDK and REST
-searches for agents, traces, sessions, and evaluations accept a fleet ID filter, with activity
-limited by each membership's environment selector.
+links to each member's normal agent page. SDK and REST searches for agents, traces, sessions, and
+evaluations accept a fleet ID filter.
 
 Fleet views reflect current membership, including past activity; sessions show only matching
 activity. Agents can appear in multiple fleets, so fleet totals are not additive. Membership does
 not change agent identity or activity ownership.
 
 Fleet ACLs govern reading and managing fleets. A fleet read succeeds with fleet read permission or
-read permission for every member's selected activity; otherwise it fails without partial results.
-Fleet read permission grants access only to selected activity, not other environments or writes.
-Adding a member requires manage permission on both the fleet and agent.
+read permission for every member agent; otherwise it fails without partial results. Fleet read
+permission grants read access to member agents' activity, not writes. Adding a member requires
+manage permission on both the fleet and agent.
 
 #### Agent discovery
 
@@ -374,37 +377,22 @@ trace-to-asset links from the relevant registries when available, and separately
 agent calls observed in traces with their provenance. Traces without a known snapshot remain visible
 at the agent level; missing asset-level observations do not imply non-use.
 
-#### Environments and permissions
-
-Environments are defined at the workspace level so names such as `dev` and `prod` are consistent
-across agents. Each trace and evaluation run has at most one environment, set at creation or left
-unassigned. Environments do not apply to agents or snapshots: a snapshot can be evaluated in `dev`
-and later deployed in `prod` without creating another snapshot. Traces and runs from each stage keep
-their own environment.
-
-Environment ACLs can apply across a workspace or to one agent. For example, a workspace rule can let
-developers write `dev` traces and evaluation runs for every agent but only read `prod` ones;
-agent-specific rules can override it. Unassigned traces and runs use agent permissions.
-
-An authorized user can later assign or move a trace or evaluation run to another environment.
-
 #### Registry backend
 
-OSS MLflow provides the default backend for agent identity and container metadata. A deployment can
-instead use another authoritative backend (e.g. Unity AI Gateway) to resolve agent records for
-discovery and enforce agent permissions. MLflow still owns snapshots and associates them, traces,
-and evaluations with the resolved agent; the external agent record need not be copied into MLflow's
-default registry tables. The configured backend supplies globally unique IDs and enforces
-workspace-unique names. The backend interface and UI behavior for alternative backends remain
-follow-up design work.
+The MLflow tracking store provides the default backend for agent identity and container metadata in
+OSS MLflow. A deployment can instead use another authoritative backend (e.g. Unity AI Gateway) to
+resolve agent records for discovery and enforce agent permissions. MLflow still owns snapshots and
+associates them, traces, and evaluations with the resolved agent; the external agent record need not
+be copied into the tracking store's agent registry tables. The configured backend supplies globally
+unique IDs and enforces workspace-unique names. The backend interface and UI behavior for
+alternative backends remain follow-up design work.
 
 #### Backwards compatibility and migration
 
 Provide **Convert to agent** in the experiment UI and an equivalent API. Conversion creates or
 selects a record through the configured registry backend, preserves existing traces, runs,
 evaluations, and resource references, and presents them under the agent. Permissions follow the
-configured backend's rules. If dev and prod experiments are converted into environments of one
-agent, preserve their separate access rules so dev users do not gain write access to prod activity.
+configured backend's rules.
 
 The GenAI experiment UI currently shows Logged Models as **Agent versions**, but these are not
 registry snapshots. If an experiment has any Logged Models, the UI warns and the API rejects
@@ -457,7 +445,6 @@ SourceRef: TypeAlias = GitSource | ImageSource
 
 class AgentFleetMember(TypedDict):
     agent_id: str
-    environment: str | None  # None selects all environments and unassigned activity
 
 
 class AgentFleet(TypedDict):
@@ -622,9 +609,9 @@ Endpoint capabilities indexed from the card follow the
 from the card's `skills` list. These describe advertised capabilities, such as "handle customer
 refunds," rather than installed `SKILL.md` packages or internal tools such as `lookup_order`.
 
-Create a snapshot when the card declares a previously unseen publisher version. A card refresh
-under the same version updates the endpoint's cached card and advertised capabilities without
-changing snapshot composition.
+Create a snapshot when the card declares a previously unseen publisher version. A card refresh under
+the same version updates the endpoint's cached card and advertised capabilities without changing
+snapshot composition.
 
 ##### Built-in Git scraper
 
@@ -637,15 +624,14 @@ The work can be organized into three phases without committing to release bounda
 
 1. **Agent container:** Establish agent records and access checks through the configured registry
    backend. Make agents an alternative to experiments across GenAI APIs, autologging, trace
-   ingestion, search, and the UI. Add optional agent fleets with fleet views and search filters,
-   workspace environments, trace and evaluation permissions, and environment filters. Support
-   conversion of eligible experiments and compatibility for existing clients.
+   ingestion, search, and the UI. Add optional agent fleets with fleet views and search filters.
+   Support conversion of eligible experiments and compatibility for existing clients.
 2. **Snapshots, discovery, and syncing:** Add agent manifests, snapshots, linked assets, harness and
-   configuration metadata, endpoints, and governance. Add registration from manifests and
-   snapshot-level trace and evaluation comparison. Expose discovery through SDK, REST, and the
-   built-in MCP server, with a companion skill in [mlflow/skills](https://github.com/mlflow/skills).
-   Add A2A and Git sync, including the last-synced card and refresh, through the shared sync
-   framework.
+   configuration metadata, endpoints, and governance. Add the onboarding wizard, registration from
+   manifests, and snapshot-level trace and evaluation comparison. Expose discovery through SDK,
+   REST, and the built-in MCP server, with a companion skill in
+   [mlflow/skills](https://github.com/mlflow/skills). Add A2A and Git sync, including the
+   last-synced card and refresh, through the shared sync framework.
 3. **Observed relationships:** Collect tool and agent relationships from instrumentation, including
    A2A calls, and show them alongside declared composition with trace provenance. Reuse
    trace-to-asset links from the corresponding asset registries.
