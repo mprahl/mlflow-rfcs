@@ -7,7 +7,7 @@
 
 | Author(s)              | [Bill Murdock](https://github.com/jwm4) (Red Hat), [Matthew Prahl](https://github.com/mprahl) (Red Hat) |
 | :--------------------- | :-- |
-| **Date Last Modified** | 2026-09-23 |
+| **Date Last Modified** | 2026-10-27 |
 | **AI Assistant(s)**    | Claude Code, Codex |
 
 **Table of contents**
@@ -23,6 +23,7 @@
   - [Status and lifecycle](#status-and-lifecycle)
   - [Repository skill import](#repository-skill-import)
   - [Plugin import](#plugin-import)
+  - [MCP configuration members](#mcp-configuration-members)
   - [Pull semantics](#pull-semantics)
   - [Workspace scoping](#workspace-scoping)
   - [Permissions](#permissions)
@@ -62,7 +63,8 @@ The two entity types are:
 - **Agent plugins**: governed versions of the open
   [Agent Plugins](https://agent-plugins.org/) package format. Each version
   preserves the complete canonical `plugin.json` manifest and may reference
-  registered skills for composition and governance.
+  registered skills for composition and governance. MCP configurations are
+  owned members of a plugin version, not independent registry entities.
 
 **Minimize required inputs.** The CLI and SDK infer optional fields
 from source content when possible, so the simplest invocation requires
@@ -94,15 +96,12 @@ storage pattern established by RFC-0004 for MCP `server_json`.
 
 Existing Claude Code plugins remain importable through an adapter that
 translates their metadata into canonical Agent Plugins manifests. Standard
-Agent Plugins packages are validated and imported directly. Root `mcp.json`
-content is recognized and preserved in packaged plugins but does not receive
-individual registry entries in this RFC. Agent plugin versions with no skill
-members, including MCP-only packages, are valid.
-
-Follow-up work tracked as
-[RFC-0010: Extended Agent Plugins](https://github.com/mlflow/rfcs/pull/27)
-will add registry entries for non-skill components such as subagents and MCP
-server references.
+Agent Plugins packages are validated and imported directly. Phase 1 indexes
+root `mcp.json` entries as plugin-owned configuration members, optionally
+associated with registered MCP server identities, never server versions.
+Phase 2 adds assembled MCP members resolved from approved access bindings
+at pull time. Agent plugin versions with no skill members, including MCP-only
+packages, are valid. Generic membership for other component types is out of scope.
 
 # Basic example
 
@@ -164,8 +163,8 @@ canonical `plugin.json`, discovers skills using the selected format's rules,
 and registers them as members of a packaged agent plugin. Each discovered skill
 becomes an independently addressable skill whose source is derived from the
 package (the package's source plus the skill's subpath within it). It preserves
-the Git source and reports recognized package content, such as `mcp.json`, that
-is preserved but not individually registered.
+the Git source, indexes standard `mcp.json` entries as MCP configuration members,
+and reports other preserved content without assigning it membership semantics.
 
 ## Motivation
 
@@ -287,10 +286,9 @@ infrastructure; registry-specific trace linkage (SKILL spans,
    source plus the skill's subpath within it), and references it in the
    member list of a new packaged agent plugin version. The agent plugin
    retains the original source pointer for the package as a whole.
-5. Root `mcp.json` is reported as recognized standard content that is preserved
-   but not individually registered. Other non-skill content is also retained in
-   the package and reported by introspection. A valid package with no skills is
-   still registered with zero skill member references.
+5. Root `mcp.json` entries become plugin-owned MCP configuration members, not
+   standalone MCP registry entries. Other non-skill content is retained and
+   reported by introspection. A valid package with no skills is still registered.
 6. The created agent plugin and skills are available through the same
    discovery, lifecycle, and pull flows as manually registered
    entries.
@@ -505,14 +503,10 @@ discovery/search operations.
 
 ### Out of scope
 
-- **Registry entries for non-skill content.** Agent plugins can contain
-  non-skill content. Standard `mcp.json` and adapter-specific content are
-  recognized and preserved in packaged plugins, but this RFC does not create
-  individual registry entries or membership rows for non-skill components.
-  Follow-up work tracked as
-  [RFC-0010: Extended Agent Plugins](https://github.com/mlflow/rfcs/pull/27)
-  will add those entries. The registry backend is designed to be
-  extensible to these types.
+- **Generic component membership.** Only skills and standard MCP configurations
+  receive membership semantics. Subagents, hooks, commands, and other
+  harness-specific content remain preserved package content; this RFC adds no
+  generic member-type mechanism or independent MCP configuration registry.
 - **Artifact storage as the only path.** The registry supports both
   external source pointers (Git, OCI, ZIP) and direct artifact storage
   (`source_type="mlflow"`). However, it is not an artifact-only store;
@@ -526,9 +520,8 @@ discovery/search operations.
 - **Agent routing or orchestration.** The registry is a metadata and
   governance layer. It does not decide which skills to invoke at
   runtime or how agents compose capabilities.
-- **MCP server hosting.** MCP server deployment and runtime management
-  are covered by the MCP Server Registry (RFC-0004) and the MCP
-  Gateway.
+- **MCP server hosting.** Deployment and runtime management remain outside
+  this registry and belong to hosting systems or a future MCP Gateway.
 - **Prompts.** MLflow already has a Prompt Registry for versioned
   prompt template management. Skills and prompts serve different
   purposes: a skill is a directory containing a SKILL.md entry point
@@ -552,6 +545,7 @@ AgentPlugin ||--o{ AgentPluginTag : "has tags"
 AgentPlugin ||--o{ AgentPluginAlias : "has aliases"
 AgentPluginVersion ||--o{ AgentPluginVersionMember : "has members"
 AgentPluginVersionMember }o--|| SkillVersion : "skill member"
+AgentPluginVersion ||--o{ MCPConfigMember : "owns configurations"
 
 AgentPluginVersionMember {
   string plugin_workspace
@@ -675,7 +669,8 @@ multi-component agent plugins.
 #### AgentPluginVersion
 
 A versioned snapshot containing an immutable canonical `plugin_json`, typed
-source metadata, lifecycle state, and optional registered-skill membership.
+source metadata, lifecycle state, registered-skill membership, and plugin-owned
+MCP configuration members.
 The full manifest is stored in a JSON column following RFC-0004's hybrid
 `server_json` precedent. MLflow-managed fields remain outside the payload.
 
@@ -766,8 +761,8 @@ it would be ambiguous which source is authoritative for a skill's content. In
 the packaged case there is no such ambiguity because the member sources are
 derived from, and therefore consistent with, the package source.
 Both kinds have canonical `plugin_json` and may have zero skill members.
-Standard `mcp.json` content in a packaged source is preserved but does not
-create membership rows in this RFC.
+Packaged MCP members index the package's configuration; Phase 2 assembled MCP
+members select access bindings rather than independently sourced package files.
 
 #### Aliases and tags
 
@@ -808,6 +803,7 @@ stateDiagram-v2
 | `draft` | Registered but not yet marked ready for general use | Reachable by an explicit version or alias; never preferred by latest resolution while an `active` version exists, but when no `active` version exists it can win `latest` if it is the highest non-`deleted` non-`active` version |
 | `active` | Ready for downstream use | Surfaced to discovery and consumers |
 | `deprecated` | Still functional but no longer recommended | Surfaced with deprecation signal |
+| `retired` (agent plugins only) | Preserved for inspection; no longer consumable | Explicit get/history/status search only; no pull, latest, or aliases |
 | `deleted` | Soft-deleted; preserved internally for history, no longer active | Not surfaced by normal get/search/list APIs |
 
 New versions default to `active` upon creation.
@@ -819,6 +815,8 @@ Allowed transitions:
 | `draft` | `active`, `deleted` |
 | `active` | `draft`, `deprecated` |
 | `deprecated` | `active`, `deleted` |
+| `draft`, `active`, `deprecated` (agent plugins only) | `retired` |
+| `retired` (agent plugins only) | `deleted` |
 
 `draft` allows a version to be registered and reviewed before it is
 recommended to consumers. A draft is still reachable by an explicit
@@ -832,6 +830,21 @@ return to `draft` (unpublish) for cases where a version needs to be
 pulled back for further review.
 `deprecated` can return to `active` (re-activate) for cases where a
 deprecation was premature. `deleted` is terminal.
+
+**Agent plugin retirement.** When an MCP access binding or client configuration
+becomes obsolete, a plugin version may no longer be suitable for installation
+but still be needed to interpret historical traces and compare plugin versions.
+Deprecation leaves it pullable, while deletion hides it from normal inspection.
+Agent plugin versions therefore additionally support
+`retired`: visible through get, version history, and explicit status searches,
+but excluded from default discovery, latest resolution, alias targets, and all
+pulls, including explicit version pins. Any `draft`, `active`, or `deprecated`
+plugin version may transition to `retired`; retirement removes its aliases and
+records a reason. Retirement is terminal except for transition to `deleted`.
+Pulling a retired version fails with an error identifying the plugin version
+and its recorded retirement reason.
+Skills retain the lifecycle above. Retiring a plugin version does not retire
+its skills, registered MCP servers, or other plugin versions.
 
 Normal version delete operations (`delete_skill_version` and
 `delete_agent_plugin_version`) transition the version to `deleted`
@@ -903,9 +916,9 @@ for administrative removal.
 same latest-resolved version used for each entity's `latest_version`. Resolution
 prefers eligible `active` versions and otherwise falls back to non-`deleted`
 non-`active` versions. Deleted versions never drive parent status, and for
-agent plugins a version withdrawn because it contains a `deleted` member is
-likewise excluded. When an entity has no resolvable version, neither
-`deleted` nor, for agent plugins, withdrawn, it has no resolved latest
+agent plugins retired versions and versions withdrawn because they contain a
+`deleted` skill member are likewise excluded. When an entity has no resolvable
+version, it has no resolved latest
 version: both `status` and `latest_version` are `None`.
 
 #### `latest_version` resolution
@@ -926,7 +939,8 @@ stable name (e.g., `production`) at a specific version.
 
 Setting an alias requires the target version to exist and not be
 `deleted`. `set_skill_alias` and `set_agent_plugin_alias` reject a
-missing or deleted target so an alias can never dangle. An alias may
+missing or deleted target, and plugin aliases also reject retired targets.
+An alias may
 point at a `draft`, `active`, or `deprecated` version: pointing an alias
 at a version is an explicit choice, so it resolves regardless of status.
 That "regardless of status" rule covers the target's own lifecycle status,
@@ -953,11 +967,12 @@ to `plugin_json["version"]`. All versions are valid SemVer (semverish inputs
 are normalized on creation). Among eligible `active` versions, semantic
 precedence selects `latest`. Creation time breaks equal SemVer precedence,
 such as versions that differ only in build metadata. When there is no active
-version, the same rule applies to non-`deleted` non-`active` candidates. A
+version, the same rule applies to non-`deleted` non-`active` candidates,
+excluding retired plugin versions. A
 version withdrawn because it contains a `deleted` member (see the
 withdrawal rule under Per-version status) is excluded from resolution
 candidates in the same way as a `deleted` version. If the plugin has no
-version that is neither `deleted`
+version that is neither `deleted`, `retired`,
 nor withdrawn, there is no latest version and
 `get_latest_agent_plugin_version` raises `RESOURCE_DOES_NOT_EXIST`.
 
@@ -1064,7 +1079,7 @@ to a looser adapter.
 
 Before importing, users can call `mlflow agent-plugins introspect` or the SDK
 `introspect_agent_plugin()` function to preview the detected format, canonical
-manifest, skills, recognized unregistered content, and warnings. Introspection is read-only,
+manifest, skills, MCP configurations, recognized unregistered content, and warnings. Introspection is read-only,
 accepts either a local path or a remotely accessible source, and does not
 create registry records. Import still requires a remote source so the
 registered agent plugin retains a pullable source pointer.
@@ -1087,7 +1102,7 @@ Otherwise the user must supply a version explicitly (e.g., `--version` on
 the CLI). MLflow inserts the supplied version into the stored payload.
 
 After inspecting the source locally, the client submits the prepared manifest
-and the discovered skill definitions to a dedicated import-registration
+and the discovered skill and MCP member definitions to a dedicated import-registration
 endpoint (the registry server never fetches user-supplied URLs). In one
 transaction the server creates the member skill versions, each with a source
 derived from the package and persisted on the skill version (the package's
@@ -1101,10 +1116,9 @@ leaves no partially registered skills behind. The complete `plugin_json` is
 immutable after creation; importing an existing `(workspace, organization, name,
 version)` fails rather than overwriting it.
 
-Non-skill content remains in the source artifact but is not registered
-as entities or members. Root `mcp.json` is reported as recognized standard
-content that is preserved but not individually registered. Other content is
-reported so that the user understands the complete package. A valid Agent
+Root `mcp.json` entries are indexed as described below, in the same import
+transaction. Other non-skill content remains in the source artifact without
+membership semantics and is reported for visibility. A valid Agent
 Plugins package with no skills is registered with zero skill members.
 Import does not install the plugin or translate an MLflow agent plugin
 into another agent plugin format.
@@ -1140,6 +1154,53 @@ versions.
 See [implementation-details.md: Plugin
 import](implementation-details.md#plugin-import) for the SDK return
 type, CLI mapping, discovery rules, and conflict behavior.
+
+### MCP configuration members
+
+MCP configurations follow the [Agent Plugins v1 specification](https://agent-plugins.org/specification#72-mcp-servers).
+Each member belongs exclusively to one plugin version and has a local name
+(its `mcpServers` key), configuration or binding selection, and an optional
+registered MCP server identity in the same workspace. It has no independent
+version, status, aliases, tags, permissions, or standalone pull. Names are unique
+within MCP members; a skill and an MCP member may share a name.
+
+An MCP configuration describes how a client launches or connects to a server,
+but does not identify that server's record in MLflow's MCP Registry (RFC-0004).
+An author may optionally associate the member with an existing registered
+server (not version), allowing users to navigate to its registry entry and discover which
+plugins declare connections to it. For example, a local member named
+`warehouse` may be associated with the registered server `io.acme/warehouse`.
+The association targets the server's stable identity, not a version: an endpoint
+can serve newer versions without changing the plugin's client configuration.
+Hard deletion of a linked server identity is blocked
+while plugin versions reference it that are not deleted or retired.
+
+**Phase 1: packaged plugins.** Import discovers and validates root `mcp.json`
+entries, storing them as immutable JSON members of the plugin version.
+Authors may explicitly associate members with registered MCP server identities (not versions).
+Introspection previews the configurations; pull preserves the original package
+without rewriting its MCP configuration. Assembled MCP members are deferred to
+Phase 2.
+
+**Phase 2: assembled plugins (non-blocking for Phase 1).** Authors select an
+access binding and local member name. The plugin version stores that selection
+and server identity; each pull generates standard `mcp.json` from the binding's
+current configuration. Binding updates affect future pulls, not already
+materialized packages.
+
+Access bindings accept either a complete standard remote MCP client
+configuration or an explicit endpoint and transport. When both are supplied,
+they must agree. Authentication remains client-managed; bundled local servers
+remain packaged-only.
+
+**Binding deletion and retirement (Phase 2).** Application-level checks, not a
+database FK, block binding deletion until referencing plugin versions are
+retired or deleted. With explicit confirmation and authorization, deletion may
+atomically retire affected versions and remove their aliases. Historical
+versions retain the binding ID after deletion.
+
+See [implementation details](implementation-details.md#agent_plugin_version_mcp_members)
+for storage, validation, and concurrency rules.
 
 ### Pull semantics
 
@@ -1179,13 +1240,15 @@ package as a single unit to the destination directory: from the plugin's
 directory tree for `mlflow`. This pulls the whole package, including
 `mcp.json` and anything else it contains, not just the skill members. For
 an assembled plugin
-(`source_type="assembled"`), pull each member individually by its own
+(`source_type="assembled"`), pull each skill member individually by its own
 `source_type` (an external source, or the member's stored artifact path
 for an `mlflow` member) to `skills/<member-name>/` under the destination,
 matching the Agent Plugins `skills/*/SKILL.md` discovery layout. If a
 member's content cannot be resolved (for example, its source is
 unavailable), the pull fails rather than producing a partial local agent
-plugin. A plugin version is also not
+plugin. In Phase 2, also resolve each selected access binding and write the
+generated configurations to root `mcp.json`; a binding-resolution failure fails
+the whole pull. Retired plugin versions cannot be pulled. A plugin version is also not
 pullable while it contains a `deleted` member, whether a pinned member of
 an assembled plugin or a member of a packaged plugin: the
 pull fails and the error identifies the withdrawn member rather than
@@ -1353,7 +1416,12 @@ manifest author name, and organization. Manifest keywords remain distinct from
 mutable MLflow tags. List cards and detail views show the entity's icon,
 falling back to a default glyph when `icons` is unset (icons are not part
 of free-text search or structured filtering). Detail views show metadata, version history, aliases, and
-tags; an agent plugin's detail also lists its skill members. To find which
+tags; an agent plugin's detail lists skills and MCP members in separate sections.
+MCP members show local name, transport, endpoint or command, expandable
+configuration, and an optional link to the registered server (not a version).
+Phase 2 binding-backed members show current binding configuration as dynamic,
+not part of the immutable plugin snapshot. Retired versions remain inspectable
+with their retirement reason. To find which
 agent plugins include a given skill, search agent plugins by member name rather
 than reading a stored field on the skill.
 Because manifest search metadata comes from the latest-resolved version,
@@ -1421,9 +1489,8 @@ Code, and generic plugin import adapters.
   installation commands, the package manager plugin interface, the
   `mlflow-skills.lock` resolution lock, and `install_count` will be
   covered in a separate RFC.
-- **Registry entries for non-skill components.** Individual registry
-  entries for non-skill content (e.g., subagents, MCP server references)
-  are deferred to
+- **Other component types.** Generic membership for subagents, hooks, commands,
+  and other harness-specific content remains outside this proposal; see
   [RFC-0010: Extended Agent Plugins](https://github.com/mlflow/rfcs/pull/27).
 - **Agent setup integration.** Add an option to
   `uvx mlflow@latest agent setup` that teaches the agent how to query
